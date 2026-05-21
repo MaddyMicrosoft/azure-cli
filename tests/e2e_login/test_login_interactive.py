@@ -31,7 +31,6 @@ def test_interactive_login_end_to_end(isolated_az_config, aad_credentials):
             auth_url,
             username=creds["user"],
             password=creds["password"],
-            headless=False,
         )
         exit_code = proc.wait(timeout=180)
     except Exception:
