@@ -1,0 +1,62 @@
+name: OIDC Refresh E2E Test
+
+trigger: none
+pr: none
+
+resources:
+- repo: self
+
+variables:
+  # Configure these in the pipeline UI or variable group.
+  SERVICE_CONNECTION_NAME: ''
+  SERVICE_CONNECTION_ID: ''
+  CLIENT_ID: ''
+  TENANT_ID: ''
+
+jobs:
+- job: OidcRefreshE2E
+  displayName: 'OIDC federated refresh e2e'
+  pool:
+    vmImage: ubuntu-latest
+  steps:
+  - checkout: self
+
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+
+  - task: AzureCLI@2
+    displayName: 'Validate federated token refresh after assertion expiry'
+    inputs:
+      azureSubscription: $(SERVICE_CONNECTION_NAME)
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -euo pipefail
+
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install -e ./src/azure-cli-core -e ./src/azure-cli
+
+        az version
+
+        az login --service-principal \
+          -u "$CLIENT_ID" \
+          -t "$TENANT_ID" \
+          --federated-identity azurepipelines \
+          --allow-no-subscriptions
+
+        echo "Acquire ARM access token at T+0"
+        az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
+
+        echo "Wait 12 minutes to outlive assertion lifetime"
+        sleep 720
+
+        echo "Acquire ARM access token at T+12 (refresh proof)"
+        az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
+    env:
+      CLIENT_ID: $(CLIENT_ID)
+      TENANT_ID: $(TENANT_ID)
+      ARM_OIDC_AZURE_SERVICE_CONNECTION_ID: $(SERVICE_CONNECTION_ID)
+      ARM_OIDC_REQUEST_TOKEN: $(System.AccessToken)
