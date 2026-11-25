@@ -134,6 +134,7 @@ def load_command_table(self, _):
                          'aks_update_credentials', supports_no_wait=True)
         g.custom_command('check-acr', 'aks_check_acr')
         g.custom_command('install-cli', 'k8s_install_cli', client_factory=None)
+        g.custom_command('install-desktop', 'aks_install_desktop', client_factory=None)
         g.custom_command('rotate-certs', 'aks_rotate_certs', supports_no_wait=True,
                          confirmation='Kubernetes will be unavailable during certificate rotation process.\n' +
                          'Are you sure you want to perform this operation?')
@@ -212,6 +213,12 @@ def load_command_table(self, _):
         g.custom_command("add", "aks_agentpool_manual_scale_add", supports_no_wait=True)
         g.custom_command("update", "aks_agentpool_manual_scale_update", supports_no_wait=True)
         g.custom_command("delete", "aks_agentpool_manual_scale_delete", supports_no_wait=True, confirmation=True)
+
+    # AKS nodepool auto-scale command
+    with self.command_group('aks nodepool auto-scale', agent_pools_sdk, client_factory=cf_agent_pools) as g:
+        g.custom_command("add", "aks_agentpool_auto_scale_add", supports_no_wait=True)
+        g.custom_command("update", "aks_agentpool_auto_scale_update", supports_no_wait=True)
+        g.custom_command("delete", "aks_agentpool_auto_scale_delete", supports_no_wait=True, confirmation=True)
 
     with self.command_group('aks command', managed_clusters_sdk, client_factory=cf_managed_clusters) as g:
         g.custom_command('invoke', 'aks_runcommand', supports_no_wait=True,

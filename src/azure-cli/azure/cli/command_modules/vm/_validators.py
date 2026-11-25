@@ -761,6 +761,68 @@ def _validate_vm_create_availability_set(cmd, namespace):
         logger.debug("adding to specified availability set '%s'", namespace.availability_set)
 
 
+def _validate_vm_create_disk_alignment(cmd, namespace):
+    from .operations.vmss import VMSSShow
+    from azure.mgmt.core.tools import parse_resource_id
+
+    if namespace.data_disk_storage_fault_domain_alignment is None \
+            and namespace.os_disk_storage_fault_domain_alignment is None:
+        return
+
+    if not namespace.vmss:
+        raise ArgumentUsageError('usage error: --data-disk-storage-fd-alignment/ '
+                                 '--os-disk-storage-fd-alignment '
+                                 'is only available for VM in a Flex VMSS.')
+
+    vmss_id = parse_resource_id(namespace.vmss)
+    vmss_show = VMSSShow(cli_ctx=cmd.cli_ctx)(command_args={
+        'resource_group': vmss_id.get('resource_group', namespace.resource_group_name),
+        'vm_scale_set_name': vmss_id['name']
+    })
+
+    if vmss_show.get('orchestrationMode', '').lower() != 'flexible':
+        raise ArgumentUsageError('usage error: --data-disk-storage-fd-alignment/ '
+                                 '--os-disk-storage-fd-alignment '
+                                 'is only available for VM in a Flex VMSS.')
+
+    if len(vmss_show.get('zones', [])) != 1:
+        raise ArgumentUsageError('usage error: --data-disk-storage-fd-alignment/ '
+                                 '--os-disk-storage-fd-alignment '
+                                 'is only available for VM in a single Availability Zone VMSS.')
+
+    _validate_data_disk_alignment(namespace)
+
+
+def _validate_data_disk_alignment(namespace):
+    if namespace.data_disk_storage_fault_domain_alignment is None:
+        return
+
+    data_disks = [disk for name, disk in getattr(namespace, 'disk_info', {}).items() if name != 'os']
+    if not data_disks:
+        raise ArgumentUsageError(
+            'usage error: --data-disk-storage-fd-alignment requires at least one data disk.')
+
+
+def _validate_vmss_create_alignment(namespace):
+    disk_alignment_requested = namespace.data_disk_storage_fault_domain_alignment is not None \
+        or namespace.os_disk_storage_fault_domain_alignment is not None
+    alignment_mode_requested = namespace.zonal_platform_fault_domain_align_mode is not None
+
+    if not disk_alignment_requested and not alignment_mode_requested:
+        return
+
+    if (namespace.orchestration_mode or '').lower() != 'flexible':
+        raise ArgumentUsageError('usage error: --data-disk-storage-fd-alignment/ '
+                                 '--os-disk-storage-fd-alignment/ '
+                                 '--zonal-fault-domain-align-mode '
+                                 'is only available for VMSS with flexible orchestration mode')
+    if not namespace.zones or len(namespace.zones) != 1:
+        raise ArgumentUsageError('usage error: --data-disk-storage-fd-alignment/ '
+                                 '--os-disk-storage-fd-alignment/ '
+                                 '--zonal-fault-domain-align-mode '
+                                 'is only available for VMSS with single Availability Zone')
+
+
 def _validate_vm_create_vmss(cmd, namespace):
     from azure.mgmt.core.tools import parse_resource_id, resource_id
     from azure.cli.core.commands.client_factory import get_subscription_id
@@ -1611,6 +1673,7 @@ def process_vm_create_namespace(cmd, namespace):
 
     _validate_vm_create_availability_set(cmd, namespace)
     _validate_vm_create_vmss(cmd, namespace)
+    _validate_vm_create_disk_alignment(cmd, namespace)
     _validate_vm_vmss_create_vnet(cmd, namespace)
     _validate_vm_create_nsg(cmd, namespace)
     _validate_vm_vmss_create_public_ip(cmd, namespace)
@@ -1802,13 +1865,15 @@ def process_vmss_create_namespace(cmd, namespace):
 
     if namespace.os_disk_delete_option is not None or namespace.data_disk_delete_option is not None:
         if namespace.orchestration_mode.lower() != flexible_str.lower():
-            raise InvalidArgumentValueError('usage error: --os-disk-delete-option/--data-disk-delete-option is only'
-                                            ' available for VMSS with flexible orchestration mode')
+            raise InvalidArgumentValueError('usage error: --os-disk-delete-option/--data-disk-delete-option is only '
+                                            'available for VMSS with flexible orchestration mode')
 
     if namespace.regular_priority_count is not None or namespace.regular_priority_percentage is not None:
         if namespace.orchestration_mode.lower() != flexible_str.lower():
-            raise InvalidArgumentValueError('usage error: --regular-priority-count/--regular-priority-percentage is'
-                                            ' only available for VMSS with flexible orchestration mode')
+            raise InvalidArgumentValueError('usage error: --regular-priority-count/--regular-priority-percentage is '
+                                            'only available for VMSS with flexible orchestration mode')
+
+    _validate_vmss_create_alignment(namespace)
 
     if namespace.orchestration_mode.lower() == flexible_str.lower():
 
@@ -1868,6 +1933,7 @@ def process_vmss_create_namespace(cmd, namespace):
 
         if getattr(namespace, 'attach_os_disk', None) or namespace.image is not None:
             _validate_vm_create_storage_profile(cmd, namespace, for_scale_set=True)
+        _validate_data_disk_alignment(namespace)
 
         if namespace.vnet_name or namespace.subnet or namespace.image:
             _validate_vm_vmss_create_vnet(cmd, namespace, for_scale_set=True)
@@ -1887,7 +1953,7 @@ def process_vmss_create_namespace(cmd, namespace):
                 namespace.authentication_type, namespace.os_type]):
             _validate_vm_vmss_create_auth(namespace, cmd)
         if namespace.assign_identity == '[system]':
-            raise InvalidArgumentValueError('usage error: only user assigned indetity is suppoprted for Flex mode.')
+            raise InvalidArgumentValueError('usage error: only user assigned identity is supported for Flex mode.')
         if namespace.assign_identity is not None:
             _validate_vm_vmss_msi(cmd, namespace)  # -- UserAssignedOnly
         _validate_proximity_placement_group(cmd, namespace)
@@ -1918,6 +1984,7 @@ def process_vmss_create_namespace(cmd, namespace):
     validate_edge_zone(cmd, namespace)
     validate_asg_names_or_ids(cmd, namespace)
     _validate_vm_create_storage_profile(cmd, namespace, for_scale_set=True)
+    _validate_data_disk_alignment(namespace)
     _validate_vm_vmss_create_vnet(cmd, namespace, for_scale_set=True)
 
     _validate_vmss_single_placement_group(namespace)
@@ -1951,6 +2018,10 @@ def process_vmss_create_namespace(cmd, namespace):
 
 
 def validate_vmss_update_namespace(cmd, namespace):  # pylint: disable=unused-argument
+    if namespace.instance_id and namespace.disable_capacity_reservation_assignment is not None:
+        raise MutuallyExclusiveArgumentError(
+            "--disable-capacity-reservation-assignment applies to the parent VMSS and cannot be used with "
+            "--instance-id")
     if not namespace.instance_id:
         if namespace.protect_from_scale_in is not None or namespace.protect_from_scale_set_actions is not None:
             raise CLIError("usage error: protection policies can only be applied to VM instances within a VMSS."
@@ -2366,7 +2437,7 @@ def process_gallery_image_version_namespace(cmd, namespace):
                 try:
                     replica_count = int(parts[1])   # raises ValueError if this is not a replica count, try other order.
                     storage_account_type = parts[2]
-                    if storage_account_type not in storage_account_types_list:
+                    if storage_account_type.lower() not in storage_account_types_list:
                         raise ArgumentUsageError(
                             "usage error: {} is an invalid target region argument. "
                             "The third part is not a valid storage account type. "
@@ -2499,10 +2570,10 @@ def process_gallery_image_version_namespace(cmd, namespace):
                 try:
                     replica_count = int(parts[2])  # raises ValueError if this is not a replica count, try other order.
                     storage_account_type = parts[3]
-                    if storage_account_type not in storage_account_types_list:
+                    if storage_account_type.lower() not in storage_account_types_list:
                         raise ArgumentUsageError(
                             "usage error: {} is an invalid target edge zone argument. "
-                            "The forth part is not a valid storage account type. "
+                            "The fourth part is not a valid storage account type. "
                             "Storage account types must be one of {}.".format(t, storage_account_types_str))
                 except ValueError:
                     raise ArgumentUsageError(
@@ -2827,6 +2898,12 @@ def validate_edge_zone(cmd, namespace):  # pylint: disable=unused-argument
 
 
 def _validate_capacity_reservation_group(cmd, namespace):
+    if (namespace.disable_capacity_reservation_assignment is True and
+            namespace.capacity_reservation_group is not None and
+            namespace.capacity_reservation_group != 'None'):
+        raise MutuallyExclusiveArgumentError(
+            "--capacity-reservation-group must be omitted or set to None when "
+            "--disable-capacity-reservation-assignment is true.")
 
     if namespace.capacity_reservation_group and namespace.capacity_reservation_group != 'None':
 
@@ -2885,3 +2962,83 @@ def _validate_community_gallery_legal_agreement_acceptance(cmd, namespace):
     if not prompt_y_n(msg, default="y"):
         import sys
         sys.exit(0)
+
+
+def process_vmss_lifecycle_hook_remove(cmd, namespace):  # pylint: disable=unused-argument
+    if namespace.remove_all and namespace.type:
+        raise MutuallyExclusiveArgumentError("Specify exactly one of --type or --all.")
+
+    if not namespace.remove_all and not namespace.type:
+        raise RequiredArgumentMissingError("Specify exactly one of --type or --all.")
+
+
+def process_vmss_lifecycle_hook_event_update(cmd, namespace):  # pylint: disable=unused-argument
+    if namespace.instance_ids is not None and not namespace.action_state:
+        raise RequiredArgumentMissingError("--instance-ids requires --action-state.")
+
+    if namespace.action_state is None and namespace.wait_until is None:
+        raise RequiredArgumentMissingError("Specify at least one of --action-state or --wait-until.")
+
+    if namespace.action_state is not None:
+        _resolve_vmss_lifecycle_hook_event_target_resources(cmd, namespace)
+
+
+def process_vmss_lifecycle_hook_event_action(cmd, namespace):  # pylint: disable=unused-argument
+    _resolve_vmss_lifecycle_hook_event_target_resources(cmd, namespace)
+
+
+def _resolve_vmss_lifecycle_hook_event_target_resources(cmd, namespace):
+    from azure.cli.core.azclierror import InvalidArgumentValueError
+    from .aaz.latest.vmss.lifecycle_hook_event import Show as _lifecycleHookEventShow
+
+    event = _lifecycleHookEventShow(cli_ctx=cmd.cli_ctx)(command_args={
+        'lifecycle_hook_event_name': namespace.lifecycle_hook_event_name,
+        'resource_group': namespace.resource_group_name,
+        'vmss_name': namespace.vmss_name,
+    })
+
+    target_resources = event.get('properties', {}).get('targetResources') or []
+
+    identifier_to_id = {}
+    target_name_to_id = {}
+    for target in target_resources:
+        resource_id = target.get('resource', {}).get('id')
+        if resource_id:
+            target_name = resource_id.rsplit('/', 1)[-1].lower()
+            identifier_to_id[target_name] = resource_id
+            target_name_to_id[target_name] = resource_id
+
+    if not namespace.instance_ids:
+        namespace.target_resource_ids = list(identifier_to_id.values())
+        return
+
+    requested_identifiers = {instance_id.lower() for instance_id in namespace.instance_ids}
+    if not requested_identifiers.issubset(identifier_to_id):
+        from .operations.vmss import VMSSListInstances
+        instances = VMSSListInstances(cli_ctx=cmd.cli_ctx)(command_args={
+            'resource_group': namespace.resource_group_name,
+            'virtual_machine_scale_set_name': namespace.vmss_name,
+        })
+        for instance in instances:
+            instance_name = instance.get('name')
+            instance_id = instance.get('instanceId')
+            if instance_name and instance_id is not None:
+                target_resource_id = target_name_to_id.get(instance_name.lower())
+                if target_resource_id:
+                    identifier_to_id[str(instance_id).lower()] = target_resource_id
+
+    resolved_ids = []
+    unknown_ids = []
+    for instance_id in namespace.instance_ids:
+        resource_id = identifier_to_id.get(instance_id.lower())
+        if resource_id is None:
+            unknown_ids.append(instance_id)
+        else:
+            resolved_ids.append(resource_id)
+
+    if unknown_ids:
+        raise InvalidArgumentValueError("The following instance ids were not found among the target resources of "
+                                        "lifecycle hook event '{}': {}"
+                                        .format(namespace.lifecycle_hook_event_name, ", ".join(unknown_ids)))
+
+    namespace.target_resource_ids = resolved_ids

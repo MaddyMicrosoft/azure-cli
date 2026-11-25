@@ -3,6 +3,23 @@
 Release History
 ===============
 
+2.91.0
+++++++
+* Remove AzureGermanCloud from hard-coded cloud list (#34042)
+* PREVIEW: Enable broker-based authentication on macOS (opt-in via `az config set core.enable_broker_on_mac=true`) (#33376)
+
+2.90.0
+++++++
+* Minor fixes
+
+2.89.1
+++++++
+* Allow SSH certificate flow in Cloud Shell (#33860)
+
+2.89.0
+++++++
+* Minor fixes
+
 2.88.0
 ++++++
 * Resolve CVE-2026-48526 (#33562)
